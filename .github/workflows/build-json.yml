@@ -1,0 +1,71 @@
+name: Build KMI JSON APIs
+
+on:
+  push:
+    paths:
+      - 'data/kmi_all_reviews.csv'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-json:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Convert CSV to JSON APIs
+        run: |
+          python3 - << 'EOF'
+          import csv
+          import json
+          from datetime import datetime
+
+          def parse_dmy(date_str):
+              """Parse DD-MM-YYYY safely for chronological sorting."""
+              s = (date_str or '').strip()
+              for fmt in ('%d-%m-%Y', '%d/%m/%Y', '%Y-%m-%d'):
+                  try:
+                      return datetime.strptime(s, fmt)
+                  except ValueError:
+                      continue
+              return datetime.min
+
+          # Read master CSV (utf-8-sig handles optional Excel BOM automatically)
+          with open('data/kmi_all_reviews.csv', mode='r', encoding='utf-8-sig') as f:
+              rows = list(csv.DictReader(f))
+
+          # Sort all records chronologically by effective_date (DD-MM-YYYY)
+          rows_sorted = sorted(rows, key=lambda x: parse_dmy(x.get('effective_date', '')))
+
+          # 1. Full historical archive JSON
+          with open('data/kmi_all_reviews.json', mode='w', encoding='utf-8') as out:
+              json.dump(rows_sorted, out, indent=2)
+
+          # 2. Deduplicated latest snapshot JSON (only newest effective_date per ticker)
+          latest_by_ticker = {}
+          for r in rows_sorted:
+              ticker = (r.get('ticker') or '').strip().upper()
+              if ticker:
+                  latest_by_ticker[ticker] = r
+
+          latest_list = sorted(
+              latest_by_ticker.values(),
+              key=lambda x: (x.get('ticker') or '').strip().upper()
+          )
+
+          with open('data/kmi_latest.json', mode='w', encoding='utf-8') as out:
+              json.dump(latest_list, out, indent=2)
+
+          print(f"Built {len(rows_sorted)} historical rows and {len(latest_list)} active latest tickers.")
+          EOF
+
+      - name: Commit and push generated JSON files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/kmi_all_reviews.json data/kmi_latest.json
+          git diff --staged --quiet || git commit -m "Auto-build KMI JSON APIs from CSV"
+          git push
